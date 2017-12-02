@@ -76,6 +76,8 @@ obj-$(CONFIG_VIDEO_ATMEL_ISI)		+= atmel/
 
 obj-$(CONFIG_VIDEO_STM32_DCMI)		+= stm32/
 
+obj-$(CONFIG_VIDEO_NEXELL_CODEC)	+= nxp-vpu/
+
 ccflags-y += -I$(srctree)/drivers/media/i2c
 
 obj-$(CONFIG_VIDEO_MEDIATEK_VPU)	+= mtk-vpu/
@@ -89,5 +91,7 @@ obj-$(CONFIG_VIDEO_MEDIATEK_JPEG)	+= mtk-jpeg/
 obj-$(CONFIG_VIDEO_QCOM_CAMSS)		+= qcom/camss-8x16/
 
 obj-$(CONFIG_VIDEO_QCOM_VENUS)		+= qcom/venus/
+
+obj-$(CONFIG_NANO_VIDEODEV)			+= nano-videodev/
 
 obj-y					+= meson/

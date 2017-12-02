@@ -506,6 +506,14 @@ config PCI_ENDPOINT_TEST
            Enable this configuration option to enable the host side test driver
            for PCI Endpoint.
 
+config NX_SCALER
+	tristate "Nexell s5pxx18 series memory to memory scaler"
+	default n
+	---help---
+	  This option enables support for scaling for Nexell s5pxx18 serise
+	  SoC. Scaler reads an image from the memory and writes the image to
+	  the memory after up/down scaling.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

@@ -1773,6 +1773,13 @@ config RTC_DRV_RTD119X
 	  If you say yes here, you get support for the RTD1295 SoC
 	  Real Time Clock.
 
+config RTC_DRV_NX
+	tristate "Nexell RTC"
+	depends on ARCH_S5P4418 || ARCH_S5P6818
+	help
+	  Driver for the internal RTC (Realtime Clock) module found on
+	  Nexell's processor.
+
 comment "HID Sensor RTC drivers"
 
 config RTC_DRV_HID_SENSOR_TIME

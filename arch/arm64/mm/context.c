@@ -60,6 +60,11 @@ static u32 get_cpu_asid_bits(void)
 		asid = 16;
 	}
 
+#ifdef CONFIG_ARM64_WORKAROUND_CCI400_DVMV7
+/* In DVMv7 protocol, ASID bits must be 8 regardless of cpu core feature */
+	asid = 8;
+#endif
+
 	return asid;
 }
 
@@ -119,6 +124,9 @@ static void flush_context(unsigned int cpu)
 
 	/* Queue a TLB invalidate and flush the I-cache if necessary. */
 	cpumask_setall(&tlb_flush_pending);
+#ifdef CONFIG_ARM64_WORKAROUND_CCI400_DVMV7
+	flush_tlb_all();
+#endif
 }
 
 static bool check_update_reserved_asid(u64 asid, u64 newasid)
@@ -233,6 +241,9 @@ switch_mm_fastpath:
 	 */
 	if (!system_uses_ttbr0_pan())
 		cpu_switch_mm(mm->pgd, mm);
+#ifdef CONFIG_ARM64_WORKAROUND_CCI400_DVMV7
+	flush_tlb_all();
+#endif
 }
 
 static int asids_init(void)

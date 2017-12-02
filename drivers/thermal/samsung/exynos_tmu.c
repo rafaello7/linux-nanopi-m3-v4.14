@@ -37,6 +37,7 @@
 
 #include "exynos_tmu.h"
 #include "../thermal_core.h"
+#include "../thermal_hwmon.h"
 
 /* Exynos generic registers */
 #define EXYNOS_TMU_REG_TRIMINFO		0x0
@@ -165,6 +166,12 @@
 #define EXYNOS7_EMUL_DATA_SHIFT			7
 #define EXYNOS7_EMUL_DATA_MASK			0x1ff
 
+/* s5p6818 specific  */
+#define S5P6818_TMU_REG_INTEN			0xB0
+#define S5P6818_TMU_REG_INTSTAT			0xB4
+#define S5P6818_TMU_REG_INTCLEAR		0xB8
+#define S5P6818_TMU_REG_EMUL_CON		0x100
+
 #define MCELSIUS	1000
 /**
  * struct exynos_tmu_data : A structure to hold the private data of the TMU
@@ -205,6 +212,8 @@ struct exynos_tmu_data {
 	struct regulator *regulator;
 	struct thermal_zone_device *tzd;
 	unsigned int ntrip;
+	bool isInitialized;
+	bool isAddedToSysfs;
 
 	int (*tmu_initialize)(struct platform_device *pdev);
 	void (*tmu_control)(struct platform_device *pdev, bool on);
@@ -770,7 +779,11 @@ static void exynos4210_tmu_control(struct platform_device *pdev, bool on)
 		con &= ~(1 << EXYNOS_TMU_CORE_EN_SHIFT);
 		interrupt_en = 0; /* Disable all interrupts */
 	}
-	writel(interrupt_en, data->base + EXYNOS_TMU_REG_INTEN);
+
+	if (data->soc == SOC_ARCH_S5P6818)
+		writel(interrupt_en, data->base + S5P6818_TMU_REG_INTEN);
+	else
+		writel(interrupt_en, data->base + EXYNOS_TMU_REG_INTEN);
 	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
 }
 
@@ -893,6 +906,14 @@ static int exynos_get_temp(void *p, int *temp)
 	if (!data || !data->tmu_read)
 		return -EINVAL;
 
+	if( ! data->isInitialized ) {
+		/* We are probably within thermal_zone_of_sensor_register call.
+		 * Return fake temperature, low enough to not trigger shutdown sequence
+		 * by thermal zone handler.
+		 */
+		*temp = 25 * MCELSIUS;
+		return 0;
+	}
 	mutex_lock(&data->lock);
 	clk_enable(data->clk);
 
@@ -947,6 +968,8 @@ static void exynos4412_tmu_set_emulation(struct exynos_tmu_data *data,
 		emul_con = EXYNOS5433_TMU_EMUL_CON;
 	else if (data->soc == SOC_ARCH_EXYNOS7)
 		emul_con = EXYNOS7_TMU_REG_EMUL_CON;
+	else if (data->soc == SOC_ARCH_S5P6818)
+		emul_con = S5P6818_TMU_REG_EMUL_CON;
 	else
 		emul_con = EXYNOS_EMUL_CON;
 
@@ -1060,6 +1083,9 @@ static void exynos4210_tmu_clear_irqs(struct exynos_tmu_data *data)
 	} else if (data->soc == SOC_ARCH_EXYNOS5433) {
 		tmu_intstat = EXYNOS5433_TMU_REG_INTPEND;
 		tmu_intclear = EXYNOS5433_TMU_REG_INTPEND;
+	} else if (data->soc == SOC_ARCH_S5P6818) {
+		tmu_intstat = S5P6818_TMU_REG_INTSTAT;
+		tmu_intclear = S5P6818_TMU_REG_INTCLEAR;
 	} else {
 		tmu_intstat = EXYNOS_TMU_REG_INTSTAT;
 		tmu_intclear = EXYNOS_TMU_REG_INTCLEAR;
@@ -1107,6 +1133,7 @@ static const struct of_device_id exynos_tmu_match[] = {
 	{ .compatible = "samsung,exynos5433-tmu", },
 	{ .compatible = "samsung,exynos5440-tmu", },
 	{ .compatible = "samsung,exynos7-tmu", },
+	{ .compatible = "nexell,s5p6818-tmu", },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, exynos_tmu_match);
@@ -1134,7 +1161,8 @@ static int exynos_of_get_soc_type(struct device_node *np)
 		return SOC_ARCH_EXYNOS5440;
 	else if (of_device_is_compatible(np, "samsung,exynos7-tmu"))
 		return SOC_ARCH_EXYNOS7;
-
+	else if (of_device_is_compatible(np, "nexell,s5p6818-tmu"))
+		return SOC_ARCH_S5P6818;
 	return -EINVAL;
 }
 
@@ -1226,6 +1254,7 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 	case SOC_ARCH_EXYNOS5250:
 	case SOC_ARCH_EXYNOS5260:
 	case SOC_ARCH_EXYNOS5420:
+	case SOC_ARCH_S5P6818:
 	case SOC_ARCH_EXYNOS5420_TRIMINFO:
 		data->tmu_initialize = exynos4412_tmu_initialize;
 		data->tmu_control = exynos4210_tmu_control;
@@ -1401,6 +1430,13 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 	}
 
 	exynos_tmu_control(pdev, true);
+	data->isInitialized = true;
+	if( (ret = thermal_add_hwmon_sysfs(data->tzd)) == 0 ) {
+		data->isAddedToSysfs = true;
+	}else{
+		/* don't run away - print error only */
+		dev_err(&pdev->dev, "Failed to add in sysfs as hwmon: %d\n", ret);
+	}
 	return 0;
 
 err_thermal:
@@ -1424,6 +1460,8 @@ static int exynos_tmu_remove(struct platform_device *pdev)
 	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
 	struct thermal_zone_device *tzd = data->tzd;
 
+	if( data->isAddedToSysfs )
+		thermal_remove_hwmon_sysfs(tzd);
 	thermal_zone_of_sensor_unregister(&pdev->dev, tzd);
 	exynos_tmu_control(pdev, false);
 

@@ -25,6 +25,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/time.h>
+#include <linux/reset.h>
 
 /* For struct samsung_timer_variant and samsung_pwm_lock. */
 #include <clocksource/samsung_pwm.h>
@@ -80,6 +81,10 @@ struct samsung_pwm_channel {
  * @base_clk:		base clock used to drive the timers
  * @tclk0:		external clock 0 (can be ERR_PTR if not present)
  * @tclk1:		external clock 1 (can be ERR_PTR if not present)
+ * add for s5p4418
+ * @tclk2:		external clock 0 (can be ERR_PTR if not present)
+ * @tclk3:		external clock 1 (can be ERR_PTR if not present)
+
  */
 struct samsung_pwm_chip {
 	struct pwm_chip chip;
@@ -91,6 +96,17 @@ struct samsung_pwm_chip {
 	struct clk *base_clk;
 	struct clk *tclk0;
 	struct clk *tclk1;
+	/* add for s5p4418 */
+	struct clk *tclk2;
+	struct clk *tclk3;
+
+	/* for suspend/resume of s5p4418/s5p6818 */
+	u32 tcfg0;
+	u32 tcfg1;
+	u32 tcon;
+	u32 tcntb[SAMSUNG_PWM_NUM];
+	u32 tcmpb[SAMSUNG_PWM_NUM];
+	u32 is_enabled;
 };
 
 #ifndef CONFIG_CLKSRC_SAMSUNG_PWM
@@ -140,6 +156,22 @@ static void pwm_samsung_set_divisor(struct samsung_pwm_chip *pwm,
 	spin_unlock_irqrestore(&samsung_pwm_lock, flags);
 }
 
+static void pwm_samsung_set_tclk(struct samsung_pwm_chip *pwm,
+					unsigned int chan)
+{
+	u32 tclk = 5;
+	unsigned long flags;
+	u32 reg;
+
+	spin_lock_irqsave(&samsung_pwm_lock, flags);
+
+	reg = readl(pwm->base + REG_TCFG1);
+	reg |= tclk << TCFG1_SHIFT(chan);
+	writel(reg, pwm->base + REG_TCFG1);
+
+	spin_unlock_irqrestore(&samsung_pwm_lock, flags);
+}
+
 static int pwm_samsung_is_tdiv(struct samsung_pwm_chip *chip, unsigned int chan)
 {
 	struct samsung_pwm_variant *variant = &chip->variant;
@@ -168,6 +200,117 @@ static unsigned long pwm_samsung_get_tin_rate(struct samsung_pwm_chip *chip,
 	return rate / (reg + 1);
 }
 
+static unsigned long calc_base_freq(unsigned long clk_freq,
+					unsigned long req_freq)
+{
+	unsigned long pwm_freq, calc_freq;
+	unsigned long optimal_freq;
+	unsigned int pre, div, tcnt = 2;
+
+	optimal_freq = req_freq;
+
+	for (pre = 0; pre < 256; ++pre) {
+		for (div = 0; div < 4; ++div) {
+			pwm_freq = clk_freq / (pre+1) / (1<<div) / tcnt;
+			if (req_freq > pwm_freq)
+				calc_freq = req_freq - pwm_freq;
+			else
+				calc_freq = pwm_freq - req_freq;
+
+			if (calc_freq < optimal_freq) {
+				optimal_freq = calc_freq;
+				if (optimal_freq == 0)
+					goto END;
+			}
+		}
+	}
+END:
+	return optimal_freq;
+}
+
+static unsigned long calc_tclk_freq(unsigned long tclk_freq,
+					unsigned long req_freq)
+{
+	unsigned long pwm_freq, calc_freq;
+	unsigned long optimal_freq;
+	unsigned long pre, tcnt = 2;
+
+	optimal_freq = req_freq;
+
+	for (pre = 0; pre < 256; ++pre) {
+		pwm_freq = tclk_freq / (pre+1) / tcnt;
+
+		if (req_freq > pwm_freq)
+			calc_freq = req_freq - pwm_freq;
+		else
+			calc_freq = pwm_freq - req_freq;
+
+		if (calc_freq < optimal_freq) {
+			optimal_freq = calc_freq;
+
+			if (optimal_freq == 0)
+				break;
+		}
+	}
+
+	return optimal_freq;
+}
+
+static unsigned int pwm_samsung_optimal_freq(struct samsung_pwm_chip *chip,
+					unsigned int chan, unsigned long freq)
+{
+	struct clk *tclk, *clk;
+	unsigned long tclk_rate, clk_rate;
+	unsigned long optimal_freq[2];
+
+	if (of_device_is_compatible(chip->chip.dev->of_node,
+				    "nexell,s5p4418-pwm")) {
+		switch (chan) {
+		case 0:
+			tclk = chip->tclk0;
+			break;
+		case 1:
+			tclk = chip->tclk1;
+			break;
+		case 2:
+			tclk = chip->tclk2;
+			break;
+		case 3:
+			tclk = chip->tclk3;
+			break;
+		default:
+			tclk = NULL;
+			break;
+		}
+	} else
+		tclk = (chan < 2) ? chip->tclk0 : chip->tclk1;
+
+	if (IS_ERR(tclk))
+		return 0;
+	tclk_rate = clk_get_rate(tclk);
+	if (!tclk_rate)
+		return 0;
+
+	optimal_freq[0] = calc_tclk_freq(tclk_rate, freq);
+	if (optimal_freq[0] == 0) {
+		pwm_samsung_set_tclk(chip, chan);
+		return 0;
+	}
+
+	if (!IS_ERR(chip->base_clk)) {
+		clk = chip->base_clk;
+		clk_rate = clk_get_rate(clk);
+		optimal_freq[1] = calc_base_freq(clk_rate, freq);
+
+		if (optimal_freq[0] >= optimal_freq[1])
+			pwm_samsung_set_tclk(chip, chan);
+	} else {
+		pwm_samsung_set_tclk(chip, chan);
+	}
+
+	return 0;
+}
+
 static unsigned long pwm_samsung_calc_tin(struct samsung_pwm_chip *chip,
 					  unsigned int chan, unsigned long freq)
 {
@@ -175,6 +318,17 @@ static unsigned long pwm_samsung_calc_tin(struct samsung_pwm_chip *chip,
 	unsigned long rate;
 	struct clk *clk;
 	u8 div;
+
+	/*
+	 * patch for s5p6818
+	 * according to the pwm clock request, determine use tclk.
+	 */
+	if (of_device_is_compatible(chip->chip.dev->of_node,
+				    "nexell,s5p4418-pwm") ||
+	    of_device_is_compatible(chip->chip.dev->of_node,
+				    "nexell,s5p6818-pwm")) {
+		pwm_samsung_optimal_freq(chip, chan, freq);
+	}
 
 	if (!pwm_samsung_is_tdiv(chip, chan)) {
 		clk = (chan < 2) ? chip->tclk0 : chip->tclk1;
@@ -473,6 +627,8 @@ static const struct of_device_id samsung_pwm_matches[] = {
 	{ .compatible = "samsung,s5p6440-pwm", .data = &s5p64x0_variant },
 	{ .compatible = "samsung,s5pc100-pwm", .data = &s5pc100_variant },
 	{ .compatible = "samsung,exynos4210-pwm", .data = &s5p64x0_variant },
+	{ .compatible = "nexell,s5p4418-pwm", .data = &s5pc100_variant },
+	{ .compatible = "nexell,s5p6818-pwm", .data = &s5pc100_variant },
 	{},
 };
 MODULE_DEVICE_TABLE(of, samsung_pwm_matches);
@@ -562,13 +718,75 @@ static int pwm_samsung_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	for (chan = 0; chan < SAMSUNG_PWM_NUM; ++chan)
-		if (chip->variant.output_mask & BIT(chan))
-			pwm_samsung_set_invert(chip, chan, true);
-
 	/* Following clocks are optional. */
 	chip->tclk0 = devm_clk_get(&pdev->dev, "pwm-tclk0");
 	chip->tclk1 = devm_clk_get(&pdev->dev, "pwm-tclk1");
+
+	if (of_device_is_compatible(pdev->dev.of_node, "nexell,s5p4418-pwm")) {
+		/* Following clocks are optional. */
+		chip->tclk2 = devm_clk_get(&pdev->dev, "pwm-tclk2");
+		chip->tclk3 = devm_clk_get(&pdev->dev, "pwm-tclk3");
+	}
+
+	/*
+	 * patch for s5p6818
+	 * s5p6818 pwm optional tclk enable.
+	 */
+	if (of_device_is_compatible(pdev->dev.of_node, "nexell,s5p4418-pwm") ||
+	    of_device_is_compatible(pdev->dev.of_node, "nexell,s5p6818-pwm")) {
+		if (!IS_ERR(chip->tclk0)) {
+			ret = clk_prepare_enable(chip->tclk0);
+			if (ret < 0)
+				dev_warn(&pdev->dev, "PWM tclk0 not using\n");
+		}
+
+		if (!IS_ERR(chip->tclk1)) {
+			ret = clk_prepare_enable(chip->tclk1);
+			if (ret < 0)
+				dev_warn(&pdev->dev, "PWM tclk1 not using\n");
+		}
+	}
+	if (of_device_is_compatible(pdev->dev.of_node, "nexell,s5p4418-pwm")) {
+		if (!IS_ERR(chip->tclk2)) {
+			ret = clk_prepare_enable(chip->tclk2);
+			if (ret < 0)
+				dev_warn(&pdev->dev, "PWM tclk2 not using\n");
+		}
+
+		if (!IS_ERR(chip->tclk3)) {
+			ret = clk_prepare_enable(chip->tclk3);
+			if (ret < 0)
+				dev_warn(&pdev->dev, "PWM tclk3 not using\n");
+		}
+	}
+
+	/*
+         * patch for s5p6818
+         * s5p6818 pwm must be reset before enabled
+         */
+#ifdef CONFIG_RESET_CONTROLLER
+	if (of_device_is_compatible(pdev->dev.of_node, "nexell,s5p4418-pwm") ||
+	    of_device_is_compatible(pdev->dev.of_node, "nexell,s5p6818-pwm")) {
+		struct reset_control *rst =
+			devm_reset_control_get(&pdev->dev, "pwm-reset");
+		if (IS_ERR(rst)) {
+			dev_err(&pdev->dev,
+					"PWM failed to get reset_control\n");
+			return -EINVAL;
+		}
+
+		if (reset_control_status(rst))
+			reset_control_reset(rst);
+	}
+#endif
+	/*
+         * move for s5p6818
+	 * TCON register value faded away by reset controller
+	 * So, invert setup moved after reset
+	 */
+	for (chan = 0; chan < SAMSUNG_PWM_NUM; ++chan)
+		if (chip->variant.output_mask & BIT(chan))
+			pwm_samsung_set_invert(chip, chan, true);
 
 	platform_set_drvdata(pdev, chip);
 
@@ -602,11 +820,108 @@ static int pwm_samsung_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM_SLEEP
+static int pwm_samsung_suspend(struct device *dev)
+{
+	struct samsung_pwm_chip *chip = dev_get_drvdata(dev);
+	unsigned int i;
+
+	/*
+	 * patch for s5p4418/s5p6818
+	 * s5p4418/s5p6818 pwm register backup and tclk disable.
+	 */
+	if (of_device_is_compatible(dev->of_node, "nexell,s5p4418-pwm") ||
+	    of_device_is_compatible(dev->of_node, "nexell,s5p6818-pwm")) {
+		chip->tcfg0 = readl(chip->base + REG_TCFG0);
+		chip->tcfg1 = readl(chip->base + REG_TCFG1);
+		chip->tcon = readl(chip->base + REG_TCON);
+		for (i = 0; i < SAMSUNG_PWM_NUM; ++i) {
+			struct pwm_device *pwm = &chip->chip.pwms[i];
+			unsigned int tcon_chan = to_tcon_channel(pwm->hwpwm);
+
+			chip->tcntb[i] = readl(chip->base + REG_TCNTB(i));
+			chip->tcmpb[i] = readl(chip->base + REG_TCMPB(i));
+			if ((chip->tcon & TCON_AUTORELOAD(tcon_chan)) &&
+			    (chip->variant.output_mask & BIT(i))) {
+				chip->is_enabled |= BIT(i);
+				pwm_samsung_disable(&chip->chip, pwm);
+			} else
+				chip->is_enabled &= ~BIT(i);
+		}
+		chip->tcon = readl(chip->base + REG_TCON);
+
+		if (!IS_ERR(chip->tclk0))
+			clk_disable_unprepare(chip->tclk0);
+		if (!IS_ERR(chip->tclk1))
+			clk_disable_unprepare(chip->tclk1);
+
+		if (of_device_is_compatible(dev->of_node,
+					    "nexell,s5p4418-pwm")) {
+			if (chip->tclk2)
+				clk_disable_unprepare(chip->tclk2);
+			if (chip->tclk3)
+				clk_disable_unprepare(chip->tclk3);
+		}
+		if (!IS_ERR(chip->base_clk))
+			clk_disable_unprepare(chip->base_clk);
+	}
+	return 0;
+}
+
 static int pwm_samsung_resume(struct device *dev)
 {
 	struct samsung_pwm_chip *our_chip = dev_get_drvdata(dev);
 	struct pwm_chip *chip = &our_chip->chip;
 	unsigned int i;
+
+	/*
+	 * patch for s5p4418/s5p6818
+	 * s5p4418/s5p6818 pwm must be reset before enabled
+	 */
+	if (of_device_is_compatible(dev->of_node, "nexell,s5p4418-pwm") ||
+	    of_device_is_compatible(dev->of_node, "nexell,s5p6818-pwm")) {
+#ifdef CONFIG_RESET_CONTROLLER
+		struct reset_control *rst =
+			devm_reset_control_get(dev, "pwm-reset");
+		if (IS_ERR(rst)) {
+			dev_err(dev, "PWM failed to get reset_control\n");
+			return -EINVAL;
+		}
+
+		if (reset_control_status(rst))
+			reset_control_reset(rst);
+#endif
+		/*
+		 * patch for s5p4418/s5p6818
+		 * s5p4418/s5p6818 pwm register restore and tclk enable.
+		 */
+		if (!IS_ERR(our_chip->base_clk))
+			clk_prepare_enable(our_chip->base_clk);
+		if (!IS_ERR(our_chip->tclk0))
+			clk_prepare_enable(our_chip->tclk0);
+		if (!IS_ERR(our_chip->tclk1))
+			clk_prepare_enable(our_chip->tclk1);
+
+		if (of_device_is_compatible(dev->of_node,
+					    "nexell,s5p4418-pwm")) {
+			if (!IS_ERR(our_chip->tclk2))
+				clk_prepare_enable(our_chip->tclk2);
+			if (!IS_ERR(our_chip->tclk3))
+				clk_prepare_enable(our_chip->tclk3);
+		}
+		writel(our_chip->tcfg0, our_chip->base + REG_TCFG0);
+		writel(our_chip->tcfg1, our_chip->base + REG_TCFG1);
+		writel(our_chip->tcon, our_chip->base + REG_TCON);
+		for (i = 0; i < SAMSUNG_PWM_NUM; ++i) {
+			struct pwm_device *pwm = &our_chip->chip.pwms[i];
+
+			writel(our_chip->tcntb[i], our_chip->base + REG_TCNTB(i));
+			writel(our_chip->tcmpb[i], our_chip->base + REG_TCMPB(i));
+			if ((our_chip->is_enabled & BIT(i)) &&
+			    (our_chip->variant.output_mask & BIT(i))) {
+				pwm_samsung_enable(&our_chip->chip, pwm);
+			}
+		}
+	}
 
 	for (i = 0; i < SAMSUNG_PWM_NUM; i++) {
 		struct pwm_device *pwm = &chip->pwms[i];
@@ -636,7 +951,7 @@ static int pwm_samsung_resume(struct device *dev)
 }
 #endif
 
-static SIMPLE_DEV_PM_OPS(pwm_samsung_pm_ops, NULL, pwm_samsung_resume);
+static SIMPLE_DEV_PM_OPS(pwm_samsung_pm_ops, pwm_samsung_suspend, pwm_samsung_resume);
 
 static struct platform_driver pwm_samsung_driver = {
 	.driver		= {

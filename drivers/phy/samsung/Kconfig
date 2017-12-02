@@ -93,3 +93,9 @@ config PHY_EXYNOS5250_SATA
 	  Exynos5250 based SoCs.This SerDes/Phy supports SATA 1.5 Gb/s,
 	  SATA 3.0 Gb/s, SATA 6.0 Gb/s speeds. It supports one SATA host
 	  port to accept one SATA device.
+
+config PHY_NX_USB2
+	bool "Nexell USB 2.0 PHY driver"
+	depends on PHY_SAMSUNG_USB2
+	default ARCH_S5P4418 || ARCH_S5P6818
+
