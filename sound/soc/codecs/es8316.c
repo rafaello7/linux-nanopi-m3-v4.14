@@ -503,7 +503,12 @@ static int es8316_mute(struct snd_soc_dai *dai, int mute)
 			SNDRV_PCM_FMTBIT_S24_LE)
 
 static const struct snd_soc_dai_ops es8316_ops = {
-	.startup = es8316_pcm_startup,
+	/* XXX: es8316_pcm_startup is invoked when control device is opened;
+	 * es8316_set_dai_sysclk is invoked later, at ioctl
+	 * how sysclk variable may be initialized at startup???
+	 * The same question for sysclk_constraints set by
+	 * es8316_set_dai_sysclk and used by es8316_pcm_startup. */
+	//.startup = es8316_pcm_startup,
 	.hw_params = es8316_pcm_hw_params,
 	.set_fmt = es8316_set_dai_fmt,
 	.set_sysclk = es8316_set_dai_sysclk,
