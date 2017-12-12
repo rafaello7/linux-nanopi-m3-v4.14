@@ -352,7 +352,7 @@ static int nexell_adc_v2_read_val(struct iio_dev *indio_dev,
 	return ret;
 }
 
-static const struct nexell_adc_data const nexell_adc_s5p6818_data = {
+static const struct nexell_adc_data nexell_adc_s5p6818_data = {
 	.version	= 2,
 	.adc_con	= nexell_adc_v2_adc_con,
 	.read_polling	= nexell_adc_v2_read_polling,

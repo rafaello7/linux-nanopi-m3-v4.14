@@ -144,6 +144,8 @@ struct stmmac_txq_cfg {
 	u32 prio;
 };
 
+struct ethtool_wolinfo;
+
 struct plat_stmmacenet_data {
 	int bus_id;
 	int phy_addr;
