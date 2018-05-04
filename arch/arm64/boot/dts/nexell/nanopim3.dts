@@ -115,7 +115,6 @@
 		};
 
 		dw_mmc_0:dw_mmc@c0062000 {			// mappings from kernel 3.x:
-			num-slots = <1>;				// num_slots, not initialized
 			bus-width = <4>;				// MMC_CAP_4_BIT_DATA
 			cap-sd-highspeed;				// DW_MCI_QUIRK_HIGHSPEED
 			cap-mmc-highspeed;				// also DW_MCI_QUIRK_HIGHSPEED
@@ -131,7 +130,6 @@
 		};
 
 		dw_mmc_1:dw_mmc@c0068000 {
-			num-slots = <1>;
 			bus-width = <4>;
 			cap-sd-highspeed;
 			clock-frequency = <100000000>;
@@ -156,7 +154,6 @@
 		};
 
 		dw_mmc_2:dw_mmc@c0069000 {
-			num-slots = <1>;				// num_slots, not initialized
 			bus-width = <4>;				// MMC_CAP_4_BIT_DATA
 			cap-sd-highspeed;				// DW_MCI_QUIRK_HIGHSPEED
 			cap-mmc-highspeed;				// also DW_MCI_QUIRK_HIGHSPEED

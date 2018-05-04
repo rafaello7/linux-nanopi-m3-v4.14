@@ -123,6 +123,7 @@ static unsigned long nexell_dwmmc_caps[4] = {
 
 static const struct dw_mci_drv_data nexell_drv_data = {
 	.caps			= nexell_dwmmc_caps,
+	.num_caps		= ARRAY_SIZE(nexell_dwmmc_caps),
 	.init			= dw_mci_nexell_priv_init,
 	.setup_clock		= dw_mci_nexell_setup_clock,
 	.parse_dt		= dw_mci_nexell_parse_dt,
