@@ -403,7 +403,7 @@ static int xenbus_command_reply(struct xenbus_file_priv *u,
 {
 	struct {
 		struct xsd_sockmsg hdr;
-		const char body[16];
+		char body[16];
 	} msg;
 	int rc;
 
@@ -412,6 +412,7 @@ static int xenbus_command_reply(struct xenbus_file_priv *u,
 	msg.hdr.len = strlen(reply) + 1;
 	if (msg.hdr.len > sizeof(msg.body))
 		return -E2BIG;
+	memcpy(&msg.body, reply, msg.hdr.len);
 
 	mutex_lock(&u->reply_mutex);
 	rc = queue_reply(&u->read_buffers, &msg, sizeof(msg.hdr) + msg.hdr.len);
@@ -613,9 +614,7 @@ static int xenbus_file_open(struct inode *inode, struct file *filp)
 	if (xen_store_evtchn == 0)
 		return -ENOENT;
 
-	nonseekable_open(inode, filp);
-
-	filp->f_mode &= ~FMODE_ATOMIC_POS; /* cdev-style semantics */
+	stream_open(inode, filp);
 
 	u = kzalloc(sizeof(*u), GFP_KERNEL);
 	if (u == NULL)

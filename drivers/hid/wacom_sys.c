@@ -118,6 +118,9 @@ static void wacom_feature_mapping(struct hid_device *hdev,
 	u32 n;
 
 	switch (equivalent_usage) {
+	case WACOM_HID_WD_TOUCH_RING_SETTING:
+		wacom->generic_has_leds = true;
+		break;
 	case HID_DG_CONTACTMAX:
 		/* leave touch_max as is if predefined */
 		if (!features->touch_max) {
@@ -282,6 +285,14 @@ static void wacom_usage_mapping(struct hid_device *hdev,
 		    field->usage[i+1].hid == HID_DG_INRANGE) {
 			usage->hid = HID_DG_BARRELSWITCH2;
 		}
+	}
+
+	/* 2nd-generation Intuos Pro Large has incorrect Y maximum */
+	if (hdev->vendor == USB_VENDOR_ID_WACOM &&
+	    hdev->product == 0x0358 &&
+	    WACOM_PEN_FIELD(field) &&
+	    wacom_equivalent_usage(usage->hid) == HID_GD_Y) {
+		field->logical_maximum = 43200;
 	}
 
 	switch (usage->hid) {
@@ -1102,8 +1113,10 @@ static int __wacom_devm_sysfs_create_group(struct wacom *wacom,
 	devres->root = root;
 
 	error = sysfs_create_group(devres->root, group);
-	if (error)
+	if (error) {
+		devres_free(devres);
 		return error;
+	}
 
 	devres_add(&wacom->hdev->dev, devres);
 
